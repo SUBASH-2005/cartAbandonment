@@ -1,0 +1,361 @@
+{% extends "base.html" %}
+{% block content %}
+
+<!-- Hero -->
+<div class="hero glass mb-4">
+  <div class="d-flex flex-wrap align-items-center justify-content-between gap-3">
+    <div class="flex-grow-1">
+      <h2 class="mb-1">S-Square Analytics — Cart Abandonment Dashboard</h2>
+      <div class="text-white-50">Developed by <b>Sanjay B</b> &amp; <b>Subash V</b></div>
+      <div class="small text-white-50 mt-2">
+        Upload model • Upload dataset • Tune threshold • See PR/ROC & Confusion Matrix • Single-session prediction
+      </div>
+    </div>
+    <div class="d-flex flex-column align-items-end gap-2">
+      <div class="d-flex align-items-center gap-2">
+        <span class="badge badge-soft">{{ 'Model: loaded ✅' if model_loaded else 'Model: not loaded' }}</span>
+        <span class="badge badge-soft">{{ 'Dataset: loaded ✅' if dataset_loaded else 'Dataset: not loaded' }}</span>
+      </div>
+      <button class="btn btn-ghost btn-sm" data-bs-toggle="modal" data-bs-target="#helpModal" aria-label="Open info">
+        ℹ️ Info
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Top row: Model & Dataset cards -->
+<div class="row g-3 align-items-stretch">
+  <!-- Model -->
+  <div class="col-lg-6 d-flex">
+    <div class="card-lite glass p-3 w-100">
+      <div class="d-flex align-items-center justify-content-between">
+        <h5 class="mb-3">1) Upload / Load Model</h5>
+        <button type="button" class="btn btn-ghost btn-sm"
+                data-bs-toggle="tooltip" data-bs-placement="left"
+                title="Upload a scikit-learn classifier (pickle). If it has feature_names_in_, those drive the input order.">
+          ?
+        </button>
+      </div>
+
+      <form method="post" enctype="multipart/form-data" class="d-flex flex-wrap align-items-end gap-2">
+        <input type="hidden" name="action" value="upload_model">
+        <div class="flex-grow-1 min-w-250">
+          <label class="form-label">Model file (.pkl / .pickle / .sav / .bin)</label>
+          <input class="form-control" type="file" name="model_file" accept=".pkl,.pickle,.sav,.bin">
+        </div>
+        <button class="btn btn-brand">Upload</button>
+      </form>
+
+      {% if model_features %}
+        <div class="mt-3 small text-white-50">
+          <div class="fw-semibold mb-1">Expected feature names (order matters):</div>
+          <code class="d-block" style="white-space:pre-wrap">{{ "\n".join(model_features) }}</code>
+        </div>
+      {% else %}
+        <div class="mt-3 small text-white-50">Model does not expose feature names; using default feature order.</div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Dataset -->
+  <div class="col-lg-6 d-flex">
+    <div class="card-lite glass p-3 w-100">
+      <div class="d-flex align-items-center justify-content-between">
+        <h5 class="mb-3">2) Upload Dataset (CSV / Excel)</h5>
+        <button type="button" class="btn btn-ghost btn-sm"
+                data-bs-toggle="tooltip" data-bs-placement="left"
+                title="Upload a CSV/XLS(X) with features. Include a numeric '{{ target_name }}' (0/1) to unlock metrics.">
+          ?
+        </button>
+      </div>
+
+      <form method="post" enctype="multipart/form-data" class="d-flex flex-wrap align-items-end gap-2">
+        <input type="hidden" name="action" value="upload_dataset">
+        <div class="flex-grow-1 min-w-250">
+          <label class="form-label">Dataset file (.csv / .xlsx / .xls)</label>
+          <input class="form-control" type="file" name="data_file" accept=".csv,.xlsx,.xls">
+        </div>
+        <button class="btn btn-brand">Upload</button>
+      </form>
+
+      <form method="post" class="d-flex flex-wrap align-items-center gap-3 mt-3">
+        <div class="d-flex flex-column" style="min-width: 160px;">
+          <label class="form-label mb-1">Decision threshold</label>
+          <input type="number" step="0.01" min="0" max="1"
+                 name="threshold"
+                 value="{{ '%.2f'|format(threshold) }}"
+                 class="form-control">
+        </div>
+        <div class="form-check mt-4">
+          <input class="form-check-input" type="checkbox" id="use_log1p" name="use_log1p" {% if use_log1p %}checked{% endif %}>
+          <label class="form-check-label" for="use_log1p">Apply log1p to features (match training)</label>
+        </div>
+        <button class="btn btn-ghost mt-3">Apply</button>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- Tabs -->
+<ul class="nav nav-tabs mt-4" id="mainTabs" role="tablist">
+  <li class="nav-item" role="presentation">
+    <button class="nav-link active" id="overview-tab" data-bs-toggle="tab" data-bs-target="#overview" type="button" role="tab" aria-controls="overview" aria-selected="true">
+      Overview
+    </button>
+  </li>
+  <li class="nav-item" role="presentation">
+    <button class="nav-link" id="batch-tab" data-bs-toggle="tab" data-bs-target="#batch" type="button" role="tab" aria-controls="batch" aria-selected="false">
+      Batch scoring &amp; metrics
+    </button>
+  </li>
+  </li>
+</ul>
+
+<div class="tab-content" id="mainTabsContent">
+  <!-- Overview -->
+<div class="tab-pane fade show active" id="overview" role="tabpanel" aria-labelledby="overview-tab">
+
+  <!-- Equal-height cards row -->
+  <div class="row g-3 mt-2 align-items-stretch">
+
+    <!-- Data preview -->
+    <div class="col-lg-6 d-flex">
+      <div class="card-lite glass p-3 w-100 d-flex flex-column equal-pane">
+        <div class="d-flex align-items-center justify-content-between">
+          <h5 class="mb-0">Data preview</h5>
+          <button type="button" class="btn btn-ghost btn-sm"
+                  data-bs-toggle="tooltip" data-bs-placement="left"
+                  title="First few rows of your uploaded dataset.">
+            ?
+          </button>
+        </div>
+
+        <div class="mt-3 table-wrap flex-grow-1">
+          {% if overview.df_head_html %}
+            <div class="table-responsive">
+              {{ overview.df_head_html | safe }}
+            </div>
+          {% else %}
+            <div class="text-white-50">Upload a dataset to view preview.</div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    <!-- Class balance -->
+    <div class="col-lg-6 d-flex">
+      <div class="card-lite glass p-3 w-100 d-flex flex-column equal-pane">
+        <div class="d-flex align-items-center justify-content-between">
+          <h5 class="mb-0">Class balance</h5>
+          <button type="button" class="btn btn-ghost btn-sm"
+                  data-bs-toggle="tooltip" data-bs-placement="left"
+                  title="Shows the distribution of '{{ target_name }}' (0/1). Helps spot imbalance.">
+            ?
+          </button>
+        </div>
+
+        <div class="mt-3 flex-grow-1">
+          {% if overview.target_bar_json %}
+            <div id="fig_target_bar" class="plot-box"></div>
+            <script>
+              (()=>{
+                // Force a consistent height so both panels align
+                const fig = {{ overview.target_bar_json | safe }};
+                fig.layout = fig.layout || {};
+                fig.layout.height = 320;
+                fig.layout.margin = {t:40,l:40,r:20,b:40};
+                Plotly.newPlot('fig_target_bar', fig, {displayModeBar:false, responsive:true});
+              })();
+            </script>
+          {% else %}
+            <div class="text-white-50">Add numeric '{{ target_name }}' (0/1) to view class balance.</div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Feature histograms -->
+  <div class="card-lite glass p-3 mt-3">
+    <div class="d-flex align-items-center justify-content-between">
+      <h5 class="mb-0">Feature distributions (raw)</h5>
+      <button type="button" class="btn btn-ghost btn-sm"
+              data-bs-toggle="tooltip" data-bs-placement="left"
+              title="Histograms for features expected by your model.">
+        ?
+      </button>
+    </div>
+
+    <div class="mt-3">
+      {% if overview.feature_hist_jsons and overview.feature_hist_jsons|length > 0 %}
+        <div class="row">
+          {% for figjson in overview.feature_hist_jsons %}
+            <div class="col-lg-6 mb-3">
+              <div id="hist_{{ loop.index }}" class="plot-box"></div>
+              <script>
+                (()=>{
+                  const fig = {{ figjson | safe }};
+                  fig.layout = fig.layout || {};
+                  fig.layout.height = 300;
+                  fig.layout.margin = {t:40,l:40,r:20,b:40};
+                  Plotly.newPlot('hist_{{ loop.index }}', fig, {displayModeBar:false, responsive:true});
+                })();
+              </script>
+            </div>
+          {% endfor %}
+        </div>
+      {% else %}
+        <div class="text-white-50">Upload a dataset containing the model's required features to view histograms.</div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+  <!-- Batch -->
+  <div class="tab-pane fade" id="batch" role="tabpanel" aria-labelledby="batch-tab">
+    <div class="card-lite glass p-3 mt-2">
+      <div class="d-flex justify-content-between align-items-center">
+        <h5 class="mb-0">Batch score &amp; evaluate</h5>
+        <form method="post" class="m-0">
+          <input type="hidden" name="action" value="score_batch">
+          <button class="btn btn-brand" {% if not (model_loaded and dataset_loaded) %}disabled{% endif %}>
+            Score dataset
+          </button>
+        </form>
+      </div>
+
+      {% if preview_scored_head_html %}
+        <div class="mt-3">
+          <div class="d-flex align-items-center justify-content-between">
+            <div class="fw-semibold">Scored preview</div>
+            <a class="btn btn-ghost btn-sm" href="{{ url_for('download_scored') }}">Download scored CSV</a>
+          </div>
+          {{ preview_scored_head_html | safe }}
+        </div>
+      {% endif %}
+
+      {% if batch_metrics.roc_auc is defined or batch_metrics.pr_auc is defined %}
+        <div class="row g-3 mt-2">
+          <div class="col-md-3">
+            <div class="card-lite glass p-3 h-100">
+              <div class="small text-white-50">ROC-AUC</div>
+              <div class="fs-3 fw-bold">{{ '%.3f'|format(batch_metrics.roc_auc) if batch_metrics.roc_auc is defined else '-' }}</div>
+            </div>
+          </div>
+          <div class="col-md-3">
+            <div class="card-lite glass p-3 h-100">
+              <div class="small text-white-50">PR-AUC</div>
+              <div class="fs-3 fw-bold">{{ '%.3f'|format(batch_metrics.pr_auc) if batch_metrics.pr_auc is defined else '-' }}</div>
+            </div>
+          </div>
+        </div>
+      {% endif %}
+
+      <div class="row g-3 mt-1">
+        {% if batch_figs.cm_json %}
+          <div class="col-lg-6">
+            <div id="fig_cm" class="glass p-2 rounded"></div>
+            <script>Plotly.newPlot('fig_cm', {{ batch_figs.cm_json | safe }});</script>
+          </div>
+        {% endif %}
+        {% if batch_figs.pr_json %}
+          <div class="col-lg-6">
+            <div id="fig_pr" class="glass p-2 rounded"></div>
+            <script>Plotly.newPlot('fig_pr', {{ batch_figs.pr_json | safe }});</script>
+          </div>
+        {% endif %}
+      </div>
+
+      <div class="row g-3 mt-1">
+        {% if batch_figs.roc_json %}
+          <div class="col-lg-6">
+            <div id="fig_roc" class="glass p-2 rounded"></div>
+            <script>Plotly.newPlot('fig_roc', {{ batch_figs.roc_json | safe }});</script>
+          </div>
+        {% endif %}
+        {% if batch_figs.coef_json %}
+          <div class="col-lg-6">
+            <div id="fig_coef" class="glass p-2 rounded"></div>
+            <script>Plotly.newPlot('fig_coef', {{ batch_figs.coef_json | safe }});</script>
+          </div>
+        {% endif %}
+      </div>
+
+      {% if classification_txt %}
+        <div class="mt-3">
+          <div class="fw-semibold mb-1">Classification report (@ threshold)</div>
+          <pre class="report">{{ classification_txt }}</pre>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+
+  <!-- Single -->
+  <div class="tab-pane fade" id="single" role="tabpanel" aria-labelledby="single-tab">
+    <div class="card-lite glass p-3 mt-2">
+      <div class="d-flex align-items-center justify-content-between">
+        <h5 class="mb-0">Single-session prediction</h5>
+        <button type="button" class="btn btn-ghost btn-sm"
+                data-bs-toggle="tooltip" data-bs-placement="left"
+                title="Enter raw feature values for a single session; we compute abandonment probability.">
+          ?
+        </button>
+      </div>
+
+      <form method="post" class="mt-2">
+        <input type="hidden" name="action" value="single_predict">
+        <div class="row g-2">
+          {% for fname in model_features %}
+            <div class="col-lg-4">
+              <label class="form-label">{{ fname }}</label>
+              <input class="form-control" type="number" step="1" min="0" name="feat_{{ fname }}" value="0">
+            </div>
+          {% endfor %}
+        </div>
+        <button class="btn btn-brand mt-3" {% if not model_loaded %}disabled{% endif %}>
+          Predict abandonment probability
+        </button>
+      </form>
+
+      {% if single_pred %}
+        <div class="d-flex flex-wrap gap-3 align-items-stretch mt-3">
+          <div class="card-lite glass p-3">
+            <div class="small text-white-50">Abandonment probability</div>
+            <div class="fs-3 fw-bold">{{ '%.3f'|format(single_pred.prob) }}</div>
+          </div>
+          <div class="card-lite glass p-3">
+            <div class="small text-white-50">Decision @ threshold {{ '%.2f'|format(threshold) }}</div>
+            <div class="fs-4 fw-semibold">{{ single_pred.decision }}</div>
+          </div>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<!-- Info Modal -->
+<div class="modal fade" id="helpModal" tabindex="-1" aria-labelledby="helpModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-centered">
+    <div class="modal-content card-lite glass p-2">
+      <div class="modal-header border-0">
+        <h5 class="modal-title" id="helpModalLabel">About this dashboard</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <ul class="mb-2">
+          <li><b>Model:</b> Upload a scikit-learn classifier. If available, <code>feature_names_in_</code> defines input order.</li>
+          <li><b>Dataset:</b> CSV/XLS(X) with features. Add <code>{{ target_name }}</code> (0/1) to enable metrics.</li>
+          <li><b>Threshold:</b> Controls the decision boundary for Abandoned vs Not Abandoned.</li>
+          <li><b>log1p:</b> Applies <code>log(1+x)</code> to non-negative features to mirror training transforms.</li>
+          <li><b>Metrics:</b> ROC-AUC, PR-AUC, PR/ROC curves, confusion matrix, and classification report.</li>
+          <li><b>Single prediction:</b> Quick probability for one session using the same pipeline.</li>
+        </ul>
+      </div>
+      <div class="modal-footer border-0">
+        <button type="button" class="btn btn-ghost" data-bs-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% endblock %}

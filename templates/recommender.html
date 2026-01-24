@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="hero mb-4">
+  <div class="d-flex flex-wrap align-items-center justify-content-between">
+    <div>
+      <h2 class="mb-1">🛍️ Product Recommendations</h2>
+      <div class="text-white-50">Choose a product to see similar items (content-based TF-IDF)</div>
+    </div>
+  </div>
+</div>
+
+<div class="card-lite p-3">
+  <form method="post" class="row g-3">
+    <div class="col-lg-8">
+      <label class="form-label">Product</label>
+      <select class="form-select" name="product_title" required>
+        <option value="">-- select --</option>
+        {% for title in options %}
+          <option value="{{ title }}" {% if selected_title == title %}selected{% endif %}>{{ title }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="col-lg-4 d-flex align-items-end">
+      <button class="btn btn-brand w-100">Get Recommendations</button>
+    </div>
+  </form>
+</div>
+
+{% if selected %}
+<div class="card-lite p-3 mt-3">
+  <h5 class="mb-2">📦 Selected Product</h5>
+  <div class="fs-5 fw-semibold">{{ selected.title }}</div>
+  <div class="text-white-50">Category: {{ selected.category }}</div>
+  <div class="mt-2">{{ selected.description }}</div>
+  <div class="mt-2 fw-semibold">
+  </div>
+</div>
+{% endif %}
+
+{% if recs and recs|length > 0 %}
+<div class="card-lite p-3 mt-3">
+  <h5 class="mb-3">🧠 Recommended Products</h5>
+  <div class="row g-3">
+    {% for r in recs %}
+      <div class="col-lg-4">
+        <div class="card-lite p-3 h-100">
+          <div class="fw-semibold">{{ r.title }}</div>
+          <div class="text-white-50 small">Category: {{ r.category }}</div>
+          <div class="small text-white-50 mt-1">Similarity: {{ '%.3f'|format(r.score) }}</div>
+          <div class="small mt-2">{{ r.description }}</div>
+        </div>
+      </div>
+    {% endfor %}
+  </div>
+</div>
+{% elif selected_title %}
+<div class="text-white-50 mt-3">No recommendations found.</div>
+{% endif %}
+
+{% endblock %}

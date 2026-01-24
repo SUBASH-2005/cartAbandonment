@@ -1,0 +1,97 @@
+:root{
+  --brand:#7c5cff;
+  --brand2:#22d3ee;
+  --bg:#0b1022;
+  --card:#12183a;
+  --text:#eef2ff;
+  --muted:#9aa3b2;
+  --line:rgba(255,255,255,0.1);
+}
+html,body{
+  background:
+    radial-gradient(1200px 600px at 10% -10%, #2a2f6d 0%, transparent 60%),
+    radial-gradient(900px 600px at 100% 0%, #3b1f5c 0%, transparent 60%),
+    var(--bg);
+  color: var(--text);
+}
+.navbar{
+  backdrop-filter: blur(6px);
+  background: rgba(10,12,28,0.55);
+  border-bottom: 1px solid var(--line);
+}
+.hero{
+  border-radius: 20px;
+  background: linear-gradient(135deg, rgba(124,92,255,0.20), rgba(34,211,238,0.12));
+  border: 1px solid var(--line);
+  padding: 22px;
+  box-shadow: 0 10px 40px rgba(0,0,0,0.35);
+}
+.card-lite{
+  background: linear-gradient(180deg, rgba(18,24,58,0.9), rgba(18,24,58,0.75));
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  transition: transform .15s ease, box-shadow .15s ease, border-color .2s ease;
+}
+.card-lite:hover{
+  transform: translateY(-2px);
+  box-shadow: 0 12px 30px rgba(0,0,0,0.35);
+  border-color: rgba(124,92,255,0.4);
+}
+.form-label{ color: var(--muted); }
+.badge-soft{
+  background: rgba(124,92,255,0.15);
+  color: #e9e5ff;
+  border: 1px solid rgba(124,92,255,0.35);
+}
+.btn-brand{
+  background: linear-gradient(135deg, var(--brand), var(--brand2));
+  border: none;
+  color: white;
+}
+.btn-ghost{
+  background: transparent;
+  color: #dfe3ff;
+  border: 1px solid var(--line);
+}
+pre.report{
+  background:#0c0f24;
+  color:#e5e7eb;
+  padding:14px;
+  border-radius:10px;
+  border:1px solid var(--line);
+  font-size: 0.9rem;
+  overflow:auto;
+}
+.table{ color:#e5e7eb; }
+/* Glass effect + small helpers */
+.glass{
+  background: rgba(255,255,255,0.06) !important;
+  border: 1px solid rgba(255,255,255,0.12) !important;
+  backdrop-filter: blur(10px) saturate(120%) !important;
+  -webkit-backdrop-filter: blur(10px) saturate(120%) !important;
+  box-shadow: 0 10px 40px rgba(0,0,0,.25);
+  border-radius: 16px;
+}
+.min-w-250 { min-width: 250px; }
+/* Equal-height panes & consistent inner heights */
+.equal-pane{ min-height: 460px; }
+@media (max-width: 991.98px){
+  .equal-pane{ min-height: auto; }
+}
+
+/* Plot boxes get a consistent minimum height */
+.plot-box{
+  min-height: 320px;
+}
+
+/* Make the preview table scroll inside the card instead of growing */
+.table-wrap{
+  max-height: 320px;
+  overflow: auto;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+}
+
+/* Trim extra spacing so both panels line up nicely */
+.table{ margin-bottom: 0; }
+
