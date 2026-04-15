@@ -38,6 +38,13 @@ ALLOWED_MODEL_EXT = {"pkl", "pickle", "sav", "bin"}
 ALLOWED_DATA_EXT = {"csv", "xlsx", "xls"}
 DEFAULT_MODEL_PATH = "train_classifier.pkl"
 TARGET = "Cart_Abandoned"
+DEFAULT_DASH_DATASET_CANDIDATES = [
+    os.path.join("cartAbandonment", "product.csv"),  # legacy path some setups use
+    "product.csv",  # legacy filename some setups use
+    os.path.join("data", "product.csv"),
+    os.path.join("data", "dataset.csv"),
+    "dataset.csv",
+]
 DEFAULT_FEATURES: List[str] = [
     "No_Items_Added_InCart",
     "No_Checkout_Confirmed",
@@ -54,11 +61,19 @@ os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 app = Flask(__name__)
 app.secret_key = "s-square-analytics"
 
+def log(msg: str):
+    # Lightweight debug logging (visible in console / dev server output)
+    try:
+        print(f"[dashboard] {msg}", flush=True)
+    except Exception:
+        pass
+
 STATE = {
     "model": None,
     "model_features": [],
     "dataset_path": None,
     "df": None,
+    "df_source": None,  # "uploaded" | "default" | None
     "last_scored_path": None,
     "threshold": 0.50,
     "use_log1p": True,
@@ -87,7 +102,9 @@ def get_expected_features(model) -> List[str]:
         return []
 
 def prepare_batch_X(df: pd.DataFrame, feature_names: List[str], use_log1p: bool) -> pd.DataFrame:
-    X = pd.DataFrame()
+    # Preserve row count/index even when some features are missing.
+    # (If X starts empty and we assign scalars for missing cols, pandas may create a 1-row frame.)
+    X = pd.DataFrame(index=df.index)
     for col in feature_names:
         if col in df.columns:
             X[col] = ensure_numeric_series(df[col]).fillna(0)
@@ -108,10 +125,22 @@ def align_to_model_features(model, X: pd.DataFrame) -> pd.DataFrame:
             X[c] = 0.0
     return X[expected]
 
+def _norm_col(s: str) -> str:
+    return str(s).strip().lower().replace(" ", "").replace("-", "").replace("__", "_")
+
+def find_col_case_insensitive(df: pd.DataFrame, wanted: str) -> Optional[str]:
+    """Return actual column name in df matching wanted, ignoring case/whitespace/punct."""
+    w = _norm_col(wanted).replace("_", "")
+    for c in df.columns:
+        if _norm_col(c).replace("_", "") == w:
+            return c
+    return None
+
 def valid_target_series(df: pd.DataFrame) -> Optional[pd.Series]:
-    if TARGET not in df.columns:
+    target_col = TARGET if TARGET in df.columns else find_col_case_insensitive(df, TARGET)
+    if not target_col:
         return None
-    y = df[TARGET]
+    y = df[target_col]
     if y.dtype == "O" or str(y.dtype).startswith("category"):
         y = y.astype(str).str.strip().str.lower().map({"1": 1, "0": 0, "yes": 1, "no": 0})
     y = pd.to_numeric(y, errors="coerce")
@@ -158,7 +187,79 @@ def load_dataframe(file_storage) -> pd.DataFrame:
         df = pd.read_excel(stream)
     else:
         df = pd.read_csv(stream, sep=None, engine="python", encoding="utf-8-sig")
+    # Normalize column names early (prevents silent "no charts" due to whitespace/case mismatches)
+    df.columns = [str(c).strip() for c in df.columns]
     return df
+
+def load_dataframe_from_path(path: str) -> pd.DataFrame:
+    """Load a dataframe from a CSV/XLSX path on disk."""
+    p = str(path)
+    if p.lower().endswith((".xlsx", ".xls")):
+        df = pd.read_excel(p)
+    else:
+        df = pd.read_csv(p, sep=None, engine="python", encoding="utf-8-sig")
+    df.columns = [str(c).strip() for c in df.columns]
+    return df
+
+def get_active_dataset() -> tuple[Optional[pd.DataFrame], Optional[str], Optional[str]]:
+    """
+    Single source of truth for dashboard dataset.
+    Priority: uploaded dataset (STATE['df'] / STATE['dataset_path']) -> default candidate file -> None
+    Returns: (df, path, source)
+    """
+    # Uploaded dataset in memory wins
+    if isinstance(STATE.get("df"), pd.DataFrame) and STATE["df"] is not None:
+        return STATE["df"], STATE.get("dataset_path"), STATE.get("df_source") or "uploaded"
+
+    # Try loading from last uploaded path if memory cleared
+    up = STATE.get("dataset_path")
+    if up and os.path.exists(up):
+        try:
+            df = load_dataframe_from_path(up)
+            STATE["df"] = df
+            STATE["df_source"] = "uploaded"
+            return df, up, "uploaded"
+        except Exception as e:
+            log(f"Failed to reload uploaded dataset from {up}: {e}")
+
+    # Fallback: default dashboard dataset (NOT products.csv)
+    for cand in DEFAULT_DASH_DATASET_CANDIDATES:
+        if cand and os.path.exists(cand):
+            try:
+                df = load_dataframe_from_path(cand)
+                STATE["df"] = df
+                STATE["dataset_path"] = cand
+                STATE["df_source"] = "default"
+                return df, cand, "default"
+            except Exception as e:
+                log(f"Failed to load default dataset from {cand}: {e}")
+
+    return None, None, None
+
+def numeric_columns_for_hist(df: pd.DataFrame, target_col: Optional[str]) -> List[str]:
+    """Pick numeric-ish columns for histograms, excluding id-like and target."""
+    exclude = set()
+    if target_col:
+        exclude.add(target_col)
+    for c in df.columns:
+        cn = _norm_col(c)
+        if cn in {"id", "idx", "index"} or cn.endswith("id") or cn.startswith("id"):
+            exclude.add(c)
+
+    cols: List[str] = []
+    for c in df.columns:
+        if c in exclude:
+            continue
+        s = df[c]
+        if pd.api.types.is_numeric_dtype(s):
+            if s.notna().any():
+                cols.append(c)
+            continue
+        # try coercion for object columns that are numeric strings
+        coerced = pd.to_numeric(s.astype(str).str.strip(), errors="coerce")
+        if coerced.notna().any():
+            cols.append(c)
+    return cols
 
 def ensure_default_model():
     if STATE["model"] is None and os.path.exists(DEFAULT_MODEL_PATH):
@@ -188,6 +289,10 @@ def ensure_recommender():
 @app.route("/", methods=["GET", "POST"])
 def index():
     ensure_default_model()
+    # Always resolve which dataset the dashboard should use
+    active_df, active_path, active_src = get_active_dataset()
+    if active_src:
+        log(f"Active dashboard dataset: source={active_src} path={active_path} shape={getattr(active_df, 'shape', None)}")
 
     if "threshold" in request.form:
         try:
@@ -214,8 +319,10 @@ def index():
             model = try_load_pickle(file.stream)
             STATE["model"] = model
             STATE["model_features"] = get_expected_features(model) or DEFAULT_FEATURES
+            log(f"Model uploaded. feature_names={len(STATE['model_features'])}")
             flash("Model loaded ✅", "success")
         except Exception as e:
+            log(f"Model upload failed: {e}")
             flash(f"Failed to load model: {e}", "danger")
         return redirect(url_for("index"))
 
@@ -230,13 +337,16 @@ def index():
             return redirect(url_for("index"))
         try:
             df = load_dataframe(file)
+            log(f"Dataset uploaded. shape={df.shape} cols_sample={list(df.columns[:10])}")
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             saved_path = os.path.join(UPLOAD_FOLDER, f"dataset_{stamp}.csv")
             df.to_csv(saved_path, index=False)
             STATE["dataset_path"] = saved_path
             STATE["df"] = df
+            STATE["df_source"] = "uploaded"
             flash("Dataset uploaded ✅", "success")
         except Exception as e:
+            log(f"Dataset upload failed: {e}")
             flash(f"Failed to read dataset: {e}", "danger")
         return redirect(url_for("index"))
 
@@ -244,13 +354,37 @@ def index():
     batch_metrics, batch_figs = {}, {}
     classification_txt, preview_scored_head_html = None, None
 
-    if action == "score_batch" and STATE["model"] is not None and STATE["df"] is not None:
+    if action == "score_batch" and STATE["model"] is not None:
         model = STATE["model"]
-        df = STATE["df"].copy()
+        # Ensure we score against the same active dataset used across the dashboard
+        df0, path0, src0 = get_active_dataset()
+        if df0 is None:
+            flash("No dataset loaded — upload a dataset first.", "warning")
+            log("Batch scoring aborted: no dataset available.")
+            return redirect(url_for("index"))
+        df = df0.copy()
+        log(f"Batch score clicked. source={src0} path={path0} df_shape={df.shape}")
+        if df is None or df.empty:
+            flash("Uploaded dataset has 0 rows — cannot run batch scoring. Please upload a non-empty file.", "warning")
+            log("Batch scoring aborted: dataset empty.")
+            return redirect(url_for("index"))
+
         expected_feats = get_expected_features(model) or DEFAULT_FEATURES
+        if not expected_feats:
+            flash("Model feature list is empty — cannot build input matrix for batch scoring.", "danger")
+            log("Batch scoring aborted: expected feature list empty.")
+            return redirect(url_for("index"))
 
         X = prepare_batch_X(df, expected_feats, use_log1p=STATE["use_log1p"])
+        log(f"After prepare_batch_X. X_shape={X.shape}")
         X = align_to_model_features(model, X)
+        log(f"After align_to_model_features. X_shape={X.shape}")
+
+        # Final safety check: scikit-learn will crash on 0 rows.
+        if X.shape[0] == 0:
+            flash("No usable rows available for prediction after preprocessing (0 samples). Check your dataset content.", "warning")
+            log("Batch scoring aborted: X has 0 rows after preprocessing/alignment.")
+            return redirect(url_for("index"))
 
         ncoef = getattr(model, "coef_", None)
         if ncoef is not None and X.shape[1] != ncoef.shape[1]:
@@ -260,11 +394,22 @@ def index():
             return redirect(url_for("index"))
 
         try:
+            if X.shape[0] == 0:
+                raise ValueError("0 samples after preprocessing")
             proba = model.predict_proba(X)[:, 1]
-        except Exception:
+        except Exception as e:
+            # Avoid hard crashes on empty / invalid matrices
+            if X.shape[0] == 0:
+                flash("Cannot score: 0 usable rows after preprocessing (0 samples). Please upload a non-empty dataset.", "warning")
+                log(f"Batch scoring blocked in predict_proba: {e}")
+                return redirect(url_for("index"))
             score = getattr(model, "decision_function", None)
             if score is None:
                 flash("Model has neither predict_proba nor decision_function.", "danger")
+                return redirect(url_for("index"))
+            if X.shape[0] == 0:
+                flash("Cannot score: 0 usable rows after preprocessing (0 samples).", "warning")
+                log(f"Batch scoring blocked in decision_function: {e}")
                 return redirect(url_for("index"))
             raw = score(X)
             proba = (raw - raw.min()) / (raw.max() - raw.min() + 1e-9)
@@ -350,26 +495,131 @@ def index():
 
     # Overview figs
     overview = {"df_head_html": None, "target_bar_json": None, "feature_hist_jsons": []}
-    if STATE["df"] is not None:
-        df = STATE["df"]
+    if active_df is not None:
+        df = active_df
         overview["df_head_html"] = df.head().to_html(classes="table table-striped table-sm", index=False)
+        target_col = TARGET if TARGET in df.columns else find_col_case_insensitive(df, TARGET)
         y = valid_target_series(df)
         if y is not None:
-            bal = y.value_counts().rename({0: "Not Abandoned", 1: "Abandoned"})
-            bar = px.bar(bal, title="Class Balance (target)", template="plotly_white")
-            overview["target_bar_json"] = fig_to_json(bar)
-        ui_feats = STATE["model_features"] or DEFAULT_FEATURES
-        present = [c for c in ui_feats if c in df.columns]
-        for colname in present:
-            h = px.histogram(df, x=colname, nbins=30, title=colname, template="plotly_white")
-            overview["feature_hist_jsons"].append(fig_to_json(h))
+            try:
+                bal = y.value_counts().rename({0: "Not Abandoned", 1: "Abandoned"})
+                # Build the figure with plain Python lists (avoids typed-array JSON that can render empty in some setups)
+                x_labels = ["Not Abandoned", "Abandoned"]
+                y_counts = [int(bal.get("Not Abandoned", 0)), int(bal.get("Abandoned", 0))]
+                bar = go.Figure(data=[go.Bar(x=x_labels, y=y_counts, name="count")])
+                bar.update_layout(title="Class Balance (target)", template="plotly_white", xaxis_title=target_col or TARGET, yaxis_title="count")
+                overview["target_bar_json"] = fig_to_json(bar)
+                log(f"Rendered class balance. target_col={target_col} counts={bal.to_dict()}")
+            except Exception as e:
+                log(f"Class balance render failed: {e}")
+        else:
+            log(f"No usable target for class balance. target_col_guess={target_col}")
+
+        # Feature distributions: use a mix of chart types (pie/radar/scatter)
+        cols = numeric_columns_for_hist(df, target_col=target_col)
+        if not cols:
+            log("No numeric columns found for feature charts.")
+        else:
+            log(f"Numeric columns selected for feature charts: {cols}")
+
+        # 1) Pie chart for target balance (if available)
+        if y is not None:
+            try:
+                counts = y.value_counts()
+                labels = ["Not Abandoned", "Abandoned"]
+                values = [int(counts.get(0, 0)), int(counts.get(1, 0))]
+                pie = go.Figure(data=[go.Pie(labels=labels, values=values, hole=0.35)])
+                pie.update_layout(title="Target balance (pie)", template="plotly_white")
+                overview["feature_hist_jsons"].append(fig_to_json(pie))
+                log(f"Rendered target pie. values={values}")
+            except Exception as e:
+                log(f"Target pie render failed: {e}")
+
+        # 2) Radar chart of feature means (up to 8)
+        try:
+            radar_cols = cols[:8]
+            if radar_cols:
+                means = []
+                thetas = []
+                for c in radar_cols:
+                    s = ensure_numeric_series(df[c])
+                    m = float(pd.to_numeric(s, errors='coerce').mean())
+                    if np.isfinite(m):
+                        means.append(m)
+                        thetas.append(c)
+                if means:
+                    radar = go.Figure(
+                        data=[go.Scatterpolar(r=means, theta=thetas, fill="toself", name="mean")]
+                    )
+                    radar.update_layout(
+                        title="Feature profile (radar: mean)",
+                        template="plotly_white",
+                        polar=dict(radialaxis=dict(visible=True)),
+                        showlegend=False,
+                    )
+                    overview["feature_hist_jsons"].append(fig_to_json(radar))
+                    log(f"Rendered radar. cols={thetas}")
+        except Exception as e:
+            log(f"Radar render failed: {e}")
+
+        # 3) Scatter plot for two numeric features (highest variance)
+        try:
+            if len(cols) >= 2:
+                variances = []
+                for c in cols:
+                    s = ensure_numeric_series(df[c])
+                    v = float(pd.to_numeric(s, errors="coerce").var())
+                    if np.isfinite(v):
+                        variances.append((v, c))
+                variances.sort(reverse=True)
+                if len(variances) >= 2:
+                    xcol = variances[0][1]
+                    ycol = variances[1][1]
+                    xs = ensure_numeric_series(df[xcol])
+                    ys = ensure_numeric_series(df[ycol])
+                    x_vals = pd.to_numeric(xs, errors="coerce")
+                    y_vals = pd.to_numeric(ys, errors="coerce")
+                    mask = x_vals.notna() & y_vals.notna()
+                    x_list = x_vals[mask].astype(float).tolist()
+                    y_list = y_vals[mask].astype(float).tolist()
+                    if len(x_list) > 0:
+                        scatter = go.Figure(data=[go.Scatter(x=x_list, y=y_list, mode="markers", marker=dict(size=5, opacity=0.6))])
+                        scatter.update_layout(
+                            title=f"Feature relationship (scatter): {xcol} vs {ycol}",
+                            template="plotly_white",
+                            xaxis_title=xcol,
+                            yaxis_title=ycol,
+                        )
+                        overview["feature_hist_jsons"].append(fig_to_json(scatter))
+                        log(f"Rendered scatter. x={xcol} y={ycol} n={len(x_list)}")
+        except Exception as e:
+            log(f"Scatter render failed: {e}")
+
+        # If nothing rendered, show a demo set so the section isn't blank
+        if len(overview["feature_hist_jsons"]) == 0:
+            try:
+                rng = np.random.default_rng(7)
+                demo_vals = rng.poisson(lam=5.0, size=500).astype(int).tolist()
+                demo_pie = go.Figure(data=[go.Pie(labels=["Class 0", "Class 1"], values=[300, 200], hole=0.35)])
+                demo_pie.update_layout(title="Demo pie (placeholder)", template="plotly_white")
+
+                demo_radar = go.Figure(data=[go.Scatterpolar(r=[2, 5, 3, 4, 6], theta=["F1", "F2", "F3", "F4", "F5"], fill="toself")])
+                demo_radar.update_layout(title="Demo radar (placeholder)", template="plotly_white", showlegend=False)
+
+                demo_scatter = go.Figure(data=[go.Scatter(x=demo_vals, y=rng.normal(0, 1, size=500).tolist(), mode="markers", marker=dict(size=5, opacity=0.6))])
+                demo_scatter.update_layout(title="Demo scatter (placeholder)", template="plotly_white", xaxis_title="x", yaxis_title="y")
+
+                overview["feature_hist_jsons"].extend([fig_to_json(demo_pie), fig_to_json(demo_radar), fig_to_json(demo_scatter)])
+                log("Rendered demo placeholder charts (pie/radar/scatter).")
+            except Exception as e:
+                log(f"Demo placeholder charts failed: {e}")
 
     return render_template(
         "index.html",
         app_name=APP_NAME,
         model_loaded=STATE["model"] is not None,
         model_features=STATE["model_features"],
-        dataset_loaded=STATE["df"] is not None,
+        dataset_loaded=active_df is not None,
         threshold=STATE["threshold"],
         use_log1p=STATE["use_log1p"],
         overview=overview,

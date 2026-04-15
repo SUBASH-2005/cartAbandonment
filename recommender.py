@@ -27,7 +27,11 @@ class ProductRecommender:
         self.vectorizer = TfidfVectorizer(stop_words="english", ngram_range=(1, 2), min_df=1)
         self.tfidf = self.vectorizer.fit_transform(self.df["_blob"].tolist())
 
-        self.id_to_idx = {int(r["id"]): i for i, r in self.df.reset_index().iterrows()}
+        self.id_to_idx = {}
+        for pos in range(len(self.df)):
+            pid = self.df.iloc[pos]["id"]
+            if pd.notna(pid):
+                self.id_to_idx[int(pid)] = pos
 
     def _normalize_schema(self):
         cols = {c.lower(): c for c in self.df.columns}
@@ -41,7 +45,8 @@ class ProductRecommender:
             raise ValueError(f"products.csv missing columns: {miss}. Expected: {REQUIRED_COLS}")
 
         self.df["id"] = pd.to_numeric(self.df["id"], errors="coerce").astype("Int64")
-        self.df["price"] = pd.to_numeric(self.df["price"], errors="coerce")
+        price_raw = self.df["price"].astype(str).str.replace("$", "", regex=False).str.strip()
+        self.df["price"] = pd.to_numeric(price_raw, errors="coerce")
 
     def recommend(self, product_id: int, k: int = 6) -> pd.DataFrame:
         if product_id not in self.id_to_idx:
