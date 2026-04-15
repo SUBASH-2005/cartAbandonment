@@ -87,6 +87,6 @@ Personalized marketing systems
 Customer behavior prediction
 
  Author
-Subash V
+ Sanjay B and Subash V
 Computer Science & Engineering
 Kumaraguru College of Technology
